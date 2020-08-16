@@ -149,7 +149,7 @@ def run_casa_command(config_command, key):
         elif t == int or t == float:
             lines.append('{0}={1}'.format(k,v))
         elif t == list:
-            lines.append('{0}="{1}"'.format(k,v))
+            lines.append('{0}={1}'.format(k,v))
         elif t == bool:
             lines.append('{0}={1}'.format(k,v))
         elif t == dict:
@@ -167,7 +167,7 @@ def split_all_directions(msfile, positions):
     run_name = os.path.splitext((os.path.basename(msfile)))[0]
 #    msfile_name = os.path.basename(msfile)[0]
     out_msfiles = []
-    outdir = f"{config['global']['split_dir']}"
+    outdir = f"{config['global']['split_individual_dir']}"
     makedir(outdir)
     for i, position in enumerate(positions):
         outputvis = f"{outdir}/{run_name}_{i:03d}.ms"
@@ -225,6 +225,7 @@ def run_wsclean_all(msfiles, section):
     logger.info('Starting run_wsclean_all')
     img_path = config[section]['img_path']
     makedir(img_path)
+    new_images = []
     for i, msfile in enumerate(msfiles):
         basename = os.path.basename(msfile)
         img_dir = f'{img_path}/{basename[:-3]}' 
@@ -238,6 +239,8 @@ def run_wsclean_all(msfiles, section):
             wsclean_command = write_wsclean_command(config_wsclean, msfile, img_name)
             logger.code('os.system("{}")'.format(wsclean_command))
             os.system(wsclean_command)
+            new_images.append(i)
+    return new_images
 
 
 #def find_cellsize(msfile):
@@ -299,25 +302,82 @@ def read_outliers_file(infile):
     return positions
 
 def first_images(msfiles):
-    run_wsclean_all(msfiles, section='wsclean')
+    new_images = run_wsclean_all(msfiles, section='wsclean')
     logger.info('Starting divide_by_model')
-    for msfile in msfiles: divide_by_model(msfile)
+    for i, msfile in enumerate(msfiles):
+        if i in new_images:
+            divide_by_model(msfile)
+            adjust_phase_centre(msfile, [0,0])
+        else:
+            logger.info(f'No divide_model needed for existing image for {msfile}')
     run_wsclean_all(msfiles, section='wsclean_unit')
 
+def adjust_phase_centre(msfile, position=[0,0]):
+    logger.info(f'Recentering {msfile}')
+    adjust_phase_center = os.path.split(sys.argv[0])[0]+'/adjust_phase_center.py'
+    logger.debug(f'Running script: {adjust_phase_center}')
+    do_logfile = '--nologfile'
+    position_str = ','.join([str(p) for p in position])
+    subprocess.call([casa_command, '--nogui', '--nologger', do_logfile, '-c', f'{adjust_phase_center}', '-msfile',f'{msfile}', '-position', position_str])
+    return
 
 def divide_by_model(msfile):
     logger.info(f'Dividing model for {msfile}')
     divide_model_path = os.path.split(sys.argv[0])[0]+'/divide_model.py'
     logger.debug(f'Running script: {divide_model_path}')
-    do_logfile = '' # '--nologfile'
-    subprocess.call([casa_command, '--nogui', '--nologger',do_logfile, '-c', f'{divide_model_path}', '-msfile',f'{msfile}'])
+    do_logfile = '--nologfile'
+    subprocess.call([casa_command, '--nogui', '--nologger', do_logfile, '-c', f'{divide_model_path}', '-msfile',f'{msfile}'])
     return
+
+def concatenate_all(msfile, msfiles):
+    logger.info(f"Running concatenate")
+    run_name = os.path.splitext((os.path.basename(msfile)))[0]
+    outdir = f"{config['global']['split_dir']}"
+    concatvis = f"{outdir}/{run_name}_concat.ms"
+    # Define commands
+    commands = {}
+    commands['concat'] = {
+        'vis': msfiles,
+        'concatvis': concatvis,
+        'respectname': False}
+    commands['listobs'] = {
+        'vis': concatvis,
+        'listfile': f"{concatvis}.listobs.txt"}
+    # Run commands
+    if os.path.exists(concatvis):
+        logger.info(f'Already exists: {concatvis}')
+    else:
+        run_casa_command(commands, 'concat')
+        run_casa_command(commands, 'listobs')
+    return concatvis
+
+
+def image_concatenate(msfile, section='wsclean_unit'):
+    config_wsclean = dict(config[section]).copy()
+    img_path = config[section]['img_path']
+    basename = os.path.basename(msfile)
+    img_dir = f'{img_path}/{basename[:-3]}' 
+    img_name = f'{img_dir}/{basename[:-3]}'
+    if os.path.exists(img_dir):
+        logger.info(f'Already exists: {img_dir}')
+    else:
+        makedir(img_dir)
+        config_wsclean = dict(config[section]).copy()
+        logger.info(f'Now processing {msfile}')
+        img_name = f'{img_dir}/{basename[:-3]}'
+        wsclean_command = write_wsclean_command(config_wsclean, msfile, img_name)
+        logger.code('os.system("{}")'.format(wsclean_command))
+        os.system(wsclean_command)
+
+
 
 def main():
     positions = read_outliers_file(config['sources']['outliers_file'])
     msfile = args.msfile
     msfiles = split_all_directions(msfile, positions)
     first_images(msfiles)
+    concatvis = concatenate_all(msfile, msfiles)
+    image_concatenate(concatvis)
 
 if __name__ == '__main__':
     args = get_args()
