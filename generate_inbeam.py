@@ -33,7 +33,6 @@ def get_args():
 #                        default='')
     parser.add_argument('--debug', dest='do_debug', action='store_true',
                        help='run in debug mode', default=False)
-    parser.add_argument('-c', help='needed for casa')
     args = parser.parse_args()
     return args
 
@@ -128,6 +127,13 @@ def rmdir(pathdir, message='Deleted:'):
             logger.info('Could not delete: {1}'.format(message, pathdir))
             pass
 
+def read_config(config_file):
+    ''' Read configuration file. '''
+    config = configparser.ConfigParser()
+    logger.info(f'Reading config file: {config_file}')
+    config.read(config_file)
+    logger.debug(f'Sections: {config.sections()}')
+    return config
 
 def run_casa_command(config_command, key):
     command_name = key
@@ -157,7 +163,7 @@ def run_casa_command(config_command, key):
 
 def split_all_directions(msfile, positions):
     logger.info('Starting split_all_directions')
-    config_split = config['global']['split_all']
+    config_split = config['split_all']
     run_name = os.path.splitext((os.path.basename(msfile)))[0]
 #    msfile_name = os.path.basename(msfile)[0]
     out_msfiles = []
@@ -201,32 +207,37 @@ def split_individual(vis, outputvis, field='',
         'datacolumn': datacolumn,
         'keepflags' : True,
         'timeaverage':timeaverage,'timebin':tavg,
-        'chanaverage':chanaverage,'chanbin':cavg}
+        'chanaverage':chanaverage,'chanbin':int(cavg)}
     commands['listobs'] = {
         'vis': vis,
         'listfile': listobs_file}
     # Run commands
     run_casa_command(commands, 'fixvis')
     run_casa_command(commands, 'mstransform')
-    if os.path.isdir(ouputvis):
+    if os.path.isdir(outputvis):
         rmdir(inter_ms)
     else:
-        logger.warning(f'There was a problem creating {outputvis}')
+        logger.critical(f'There was a problem creating {outputvis}')
+        sys.exit(1)
     run_casa_command(commands, 'listobs')
 
-def run_wsclean_all(msfiles):
+def run_wsclean_all(msfiles, section):
     logger.info('Starting run_wsclean_all')
-    makedir('./images')
+    img_path = config[section]['img_path']
+    makedir(img_path)
     for i, msfile in enumerate(msfiles):
-        config_wsclean = dict(config['wsclean']).copy()
-        logger.info(f'Now processing {msfile}')
         basename = os.path.basename(msfile)
-        img_dir = f'./images/{basename[:-3]}' 
-        makedir(img_dir)
-        img_name = f'{img_dir}/{basename[:-3]}'
-        wsclean_command = write_wsclean_command(config_wsclean, msfile, img_name)
-        logger.code('os.system("{}")'.format(wsclean_command))
-        os.system(wsclean_command)
+        img_dir = f'{img_path}/{basename[:-3]}' 
+        if os.path.exists(img_dir):
+            logger.info(f'Already exists: {img_dir}')
+        else:
+            makedir(img_dir)
+            config_wsclean = dict(config[section]).copy()
+            logger.info(f'Now processing {msfile}')
+            img_name = f'{img_dir}/{basename[:-3]}'
+            wsclean_command = write_wsclean_command(config_wsclean, msfile, img_name)
+            logger.code('os.system("{}")'.format(wsclean_command))
+            os.system(wsclean_command)
 
 
 #def find_cellsize(msfile):
@@ -264,7 +275,7 @@ def write_wsclean_command(config_wsclean, msfile, img_name):
         config_wsclean.pop('-casa-mask')
 
     # Only keep keys starting with - that will be passed to wsclean
-    for key in config_wsclean.keys():
+    for key in list(config_wsclean.keys()):
         if key[0] != '-':
             config_wsclean = drop_key(config_wsclean, key)
     wsclean_params = ' '.join(['{0} {1}'.format(k,v)
@@ -287,68 +298,26 @@ def read_outliers_file(infile):
                 logger.info(position)
     return positions
 
-
-#def shift_field_position(eMCP, msfile, shift):
-#    field = shift['field']
-#    new_pos = shift['new_position']
-#    position_name = shift['new_field_name']
-#    logger.info('Field {0} will be shifted to {1} on {2}'.format(field, position_name, new_pos))
-#    msfile_split = '{0}_{1}'.format(msfile, position_name)
-#    mssources = vishead(msfile,mode='list',listitems='field')['field'][0]
-#    if field not in mssources:
-#        logger.critical('Requested field to shift: {} not in MS! Closing '.format(field))
-#        exit_pipeline(eMCP)
-#    rmdir(msfile_split)
-#    # Split
-#    logger.info('Splitting field: {}'.format(field))
-#    mstransform(msfile, outputvis=msfile_split, field=field, datacolumn='data')
-#    find_casa_problems()
-#    #FIXVIS
-#    logger.info('Changing phase center to: {}'.format(new_pos))
-#    fixvis(vis=msfile_split, field=field, outputvis='', phasecenter=new_pos, datacolumn='data')
-#    find_casa_problems()
-#    # Change field name
-#    tb.open(msfile_split+'/FIELD',nomodify=False)
-#    st=tb.selectrows(0)
-#    st.putcol('NAME', '{0}'.format(position_name))
-#    st.done()
-#    tb.close()
-#    # Average individual field
-#    chanbin = eMCP['defaults']['average']['chanbin']
-#    timebin = eMCP['defaults']['average']['timebin']
-#    if timebin == '1s':
-#        timeaverage = False
-#    else:
-#        timeaverage = True
-#    if chanbin == 1:
-#        chanaverage = False
-#    else:
-#        chanaverage = True
-#    datacolumn = eMCP['defaults']['average']['datacolumn']
-#    scan = eMCP['defaults']['average']['scan']
-#    antenna = eMCP['defaults']['average']['antenna']
-#    timerange = eMCP['defaults']['average']['timerange']
-#    rmdir(msfile_split+'_avg')
-#    mstransform(vis=msfile_split, outputvis=msfile_split+'_avg',
-#                timeaverage=timeaverage, chanaverage=chanaverage,
-#                timerange=timerange, scan=scan, antenna=antenna,
-#                timebin=timebin,  chanbin=chanbin,
-#                datacolumn=datacolumn, keepflags=True)
+def first_images(msfiles):
+    run_wsclean_all(msfiles, section='wsclean')
+    logger.info('Starting divide_by_model')
+    for msfile in msfiles: divide_by_model(msfile)
+    run_wsclean_all(msfiles, section='wsclean_unit')
 
 
-def read_config(config_file):
-    ''' Read configuration file. '''
-    config = configparser.ConfigParser()
-    logger.info(f'Reading config file: {config_file}')
-    config.read(config_file)
-    logger.debug(f'Sections: {config.sections()}')
-    return config
+def divide_by_model(msfile):
+    logger.info(f'Dividing model for {msfile}')
+    divide_model_path = os.path.split(sys.argv[0])[0]+'/divide_model.py'
+    logger.debug(f'Running script: {divide_model_path}')
+    do_logfile = '' # '--nologfile'
+    subprocess.call([casa_command, '--nogui', '--nologger',do_logfile, '-c', f'{divide_model_path}', '-msfile',f'{msfile}'])
+    return
 
 def main():
     positions = read_outliers_file(config['sources']['outliers_file'])
     msfile = args.msfile
     msfiles = split_all_directions(msfile, positions)
-    run_wsclean_all(msfiles)
+    first_images(msfiles)
 
 if __name__ == '__main__':
     args = get_args()
