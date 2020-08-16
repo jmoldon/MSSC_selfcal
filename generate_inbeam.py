@@ -92,6 +92,15 @@ def makedir(pathdir):
         logger.debug('Cannot create directory: {}'.format(pathdir))
         pass
 
+def copydir(pathdir, destination):
+    try:
+        shutil.copytree(pathdir, destination)
+        logger.info(f'Copy directory: {pathdir} to {destination}')
+        logger.code(f'shutil.copytree("{pathdir},{destination}")')
+    except:
+        logger.debug(f'Copy directory: {pathdir} to {destination}')
+        pass
+
 def drop_key(dictionary, key):
     try:
         dictionary.pop(key)
@@ -147,16 +156,19 @@ def run_casa_command(config_command, key):
     subprocess.call([casa_command, '--nogui', '--nologger','--nologfile', '-c', output]) 
 
 def split_all_directions(msfile, positions):
+    logger.info('Starting split_all_directions')
+    config_split = config['global']['split_all']
     run_name = os.path.splitext((os.path.basename(msfile)))[0]
 #    msfile_name = os.path.basename(msfile)[0]
     out_msfiles = []
     outdir = f"{config['global']['split_dir']}"
-    os.makedirs(outdir)
+    makedir(outdir)
     for i, position in enumerate(positions):
         outputvis = f"{outdir}/{run_name}_{i:03d}.ms"
         out_msfiles.append(outputvis)
         if not os.path.exists(outputvis):
-            split_individual(vis=msfile, outputvis=outputvis, position=position)
+            split_individual(vis=msfile, outputvis=outputvis, position=position,
+                             cavg=config_split['cavg'], tavg=config_split['tavg'])
         else:
             logger.info(f'Already exists: {outputvis}')
     return out_msfiles
@@ -166,14 +178,24 @@ def split_individual(vis, outputvis, field='',
                     chanaverage=True, cavg=8,
                     datacolumn='data',
                     position=''):
-    # Clean file
-    rmdir(outputvis)
+    inter_ms = f"{outputvis}.tmp"
     listobs_file = f'{outputvis}.listobs.txt'
+    # Clean files
+    rmdir(outputvis)
+    rmdir(inter_ms)
     rmfile(listobs_file)
+    #
+    copydir(vis, inter_ms) 
     # Define commands
     commands = {}
+    commands['fixvis'] = {
+        'vis': inter_ms,
+        'field': field,
+        'outputvis': '',
+        'phasecenter': position,
+        'datacolumn': datacolumn}
     commands['mstransform'] = {
-        'vis' : vis,
+        'vis' : inter_ms,
         'outputvis' : outputvis,
         'field': field,
         'datacolumn': datacolumn,
@@ -183,16 +205,13 @@ def split_individual(vis, outputvis, field='',
     commands['listobs'] = {
         'vis': vis,
         'listfile': listobs_file}
-    commands['fixvis'] = {
-        'vis': outputvis,
-        'field': field,
-        'outputvis': '',
-        'phasecenter': position,
-        'datacolumn': datacolumn}
     # Run commands
+    run_casa_command(commands, 'fixvis')
     run_casa_command(commands, 'mstransform')
-    if position != '':
-        run_casa_command(commands, 'fixvis')
+    if os.path.isdir(ouputvis):
+        rmdir(inter_ms)
+    else:
+        logger.warning(f'There was a problem creating {outputvis}')
     run_casa_command(commands, 'listobs')
 
 def run_wsclean_all(msfiles):
